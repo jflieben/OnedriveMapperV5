@@ -2837,7 +2837,7 @@ if($autoMapFavoriteSites){
 
     try{
         log -text "Retrieving favorited sites because autoMapFavoriteSites is set to TRUE"
-        $res = New-WebRequest -url "https://$O365CustomerName.sharepoint.com/_layouts/15/sharepoint.aspx?v=following" -method GET
+        $res = New-WebRequest -url "https://$O365CustomerName.sharepoint.com/_layouts/15/sharepoint.aspx?v=following" -method GET -accept "application/json;odata=verbose"
         $res = (handleO365Redirect -res $res)[0]
         $favoritesURL = "https://$O365CustomerName.sharepoint.com/_api/v2.1/favorites/followedSites?`$expand=contentTypes&`$top=100"
         $res = New-WebRequest -url $favoritesURL -method GET -accept "application/json;odata=verbose"
