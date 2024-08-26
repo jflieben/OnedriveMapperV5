@@ -1415,7 +1415,6 @@ while($true){
         $global:edgeOptions.addArguments("proxy-server='direct://'")
         $global:edgeOptions.addArguments("proxy-bypass-list=*")
         $global:edgeOptions.addArguments("disk-cache-size=262144")
-        $global:edgeOptions.addArguments("--app=https://www.google.nl")
         $global:edgeOptions.addArguments("--user-agent=Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/39.0.2171.71 Safari/537.36 Edge/12.0 OneDriveMapper/$version")
         if($forceHideEdge){
             $global:edgeOptions.addArguments("--headless=new")
