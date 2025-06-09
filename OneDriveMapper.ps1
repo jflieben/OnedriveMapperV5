@@ -12,7 +12,7 @@ param(
     [Switch]$hideConsole
 )
 
-$version = "5.15"
+$version = "5.16"
 
 ####REQUIRED MANUAL CONFIGURATION
 $O365CustomerName      = "lieben"          #This should be the name of your tenant (example, lieben as in lieben.onmicrosoft.com) 
@@ -31,8 +31,8 @@ mapOnlyForSpecificGroup = this only works for DOMAIN JOINED devices that can rea
 #DEFAULT SETTINGS: (onedrive only, to the X: drive)
 $desiredMappings =  @(
     @{"displayName"="Onedrive for Business";"targetLocationType"="driveletter";"targetLocationPath"="X:";"sourceLocationPath"="autodetect";"mapOnlyForSpecificGroup"=""}
-    @{"displayName"="Sharepoint Site A";"targetLocationType"="driveletter";"targetLocationPath"="Z:";"sourceLocationPath"="https://lieben.sharepoint.com/sites/groep30/Gedeelde%20%20documenten/Forms/AllItems.aspx";"mapOnlyForSpecificGroup"=""}
-    @{"displayName"="Sharepoint Site A";"targetLocationType"="driveletter";"targetLocationPath"="Q:";"sourceLocationPath"="https://lieben.sharepoint.com/sites/groep30/Gedeelde%20%20documenten/Brondata";"mapOnlyForSpecificGroup"=""}
+    #@{"displayName"="Sharepoint Site A";"targetLocationType"="driveletter";"targetLocationPath"="Z:";"sourceLocationPath"="https://lieben.sharepoint.com/sites/groep30/Gedeelde%20%20documenten/Forms/AllItems.aspx";"mapOnlyForSpecificGroup"=""}
+    #@{"displayName"="Sharepoint Site A";"targetLocationType"="driveletter";"targetLocationPath"="Q:";"sourceLocationPath"="https://lieben.sharepoint.com/sites/groep30/Gedeelde%20%20documenten/Brondata";"mapOnlyForSpecificGroup"=""}
 )
 
 <#
@@ -98,7 +98,7 @@ $o365loginURL = "https://login.microsoftonline.com/login.srf?msafed=0"
 $O365CustomerName = $O365CustomerName.ToLower() 
 #for people that don't RTFM, fix wrongly entered customer names:
 $O365CustomerName = $O365CustomerName -Replace ".onmicrosoft.com",""
-$finalURLs = @("https://portal.office.com","https://outlook.office365.com","https://outlook.office.com","https://$($O365CustomerName)-my.sharepoint.com","https://$($O365CustomerName).sharepoint.com","https://www.office.com")
+$finalURLs = @("https://m365.cloud.microsoft","https://portal.office.com","https://outlook.office365.com","https://outlook.office.com","https://$($O365CustomerName)-my.sharepoint.com","https://$($O365CustomerName).sharepoint.com","https://www.office.com")
 
 function log{
     param (
@@ -464,8 +464,13 @@ function startWebDavClient{
         log -text "Attempting to automatically start the WebDav client without elevation..."
         $compilerParameters = New-Object System.CodeDom.Compiler.CompilerParameters
         $compilerParameters.CompilerOptions="/unsafe"
+
         $compilerParameters.GenerateInMemory = $True
-        Add-Type -TypeDefinition $Source -Language CSharp -CompilerParameters $compilerParameters
+        if ($PSVersionTable.PSVersion.Major -eq 5) {
+            Add-Type -TypeDefinition $Source -Language CSharp -CompilerParameters $compilerParameters
+        }elsE{
+            Add-Type -TypeDefinition $Source -Language CSharp -CompilerOptions $compilerParameters
+        }
         [JosL.WebClient.Starter]::startService()
         log -text "Start Service Command completed without errors"
         Start-Sleep -s 5
@@ -992,7 +997,11 @@ try{
     $compilerParameters = New-Object System.CodeDom.Compiler.CompilerParameters
     $compilerParameters.CompilerOptions="/unsafe"
     $compilerParameters.GenerateInMemory = $True
-    Add-Type -TypeDefinition $source -Language CSharp -CompilerParameters $compilerParameters
+    if ($PSVersionTable.PSVersion.Major -eq 5) {
+        Add-Type -TypeDefinition $source -Language CSharp -CompilerParameters $compilerParameters
+    }elsE{
+        Add-Type -TypeDefinition $Source -Language CSharp -CompilerOptions $compilerParameters
+    }    
     [DateTime]$dateTime = Get-Date
     $dateTime = $dateTime.AddDays(1)
     $str = $dateTime.ToString("R")
@@ -1237,7 +1246,7 @@ if($autoClearAllCookies){
     Start-Sleep -s 10
 }
 
-$baseURL = ("https://$($O365CustomerName)-my.sharepoint.com/_layouts/15/MySite.aspx?MySiteRedirect=AllDocuments") 
+$baseURL = ("https://$($O365CustomerName)-my.sharepoint.com/my") 
 $mapURLpersonal = "\\$O365CustomerName-my.sharepoint.com@SSL\DavWWWRoot\personal\"
 
 $intendedmappings = @()
@@ -1439,7 +1448,7 @@ while($true){
 
     #cache HWND's of the new Edge window and then hide it until we need user-input
     try{
-        $global:cachedHwnds = (Get-Process -ErrorAction SilentlyContinue -Id (gwmi win32_process | ? parentprocessid -eq $((gwmi win32_process | ? {$_.parentprocessid -eq $PID -and $_.name -eq "msedgedriver.exe"})).ProcessId).ProcessId).MainWindowHandle | Where-Object{$_ -ne 0}
+        $global:cachedHwnds = (Get-Process -ErrorAction SilentlyContinue -Id (Get-WmiObject win32_process | ? parentprocessid -eq $((Get-WmiObject win32_process | ? {$_.parentprocessid -eq $PID -and $_.name -eq "msedgedriver.exe"})).ProcessId).ProcessId).MainWindowHandle | Where-Object{$_ -ne 0}
     }catch{
         log -text "Failed to cache Edge Window Handles $($Error[0])" -fout
     }
@@ -1495,7 +1504,7 @@ while($true){
         if($intendedMappings[$count].mapped){continue}
         if($intendedMappings[$count].sourceLocationPath -eq "autodetect"){
             $timeSpent = 0
-            while($global:edgeDriver.Url.IndexOf("/personal/") -eq -1){
+            while($global:edgeDriver.PageSource.IndexOf("webAbsoluteUrl") -eq -1){
                 Start-Sleep -s 2
                 $timeSpent+=2
                 log -text "Attempting to detect username at $($global:edgeDriver.Url), waited for $timeSpent seconds" 
@@ -1509,9 +1518,9 @@ while($true){
                 }
             }
             try{
-                $start = $global:edgeDriver.Url.IndexOf("/personal/")+10 
-                $end = $global:edgeDriver.Url.IndexOf("/",$start) 
-                $userURL = $global:edgeDriver.Url.Substring($start,$end-$start).Replace("%27","'")
+                $start = $global:edgeDriver.PageSource.IndexOf("/personal/")+10 
+                $end = $global:edgeDriver.PageSource.IndexOf("`"",$start) 
+                $userURL = $global:edgeDriver.PageSource.Substring($start,$end-$start).Replace("%27","'")
                 $mapURL = $mapURLpersonal + $userURL + "\" + $libraryName 
             }catch{
                 log -text "Failed to get the username while at $($global:edgeDriver.Url), aborting" -fout
