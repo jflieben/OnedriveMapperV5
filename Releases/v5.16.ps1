@@ -7,14 +7,12 @@
 #Enterprise users:  This script is not recommended for business critical Enterprise use, see https://www.lieben.nu/liebensraum/onedrivemapper/onedrivemapper-cloud/ for alternatives
 #Requirements:      Keep Me Signed in (sign in acceleration) allowed (Tenant wide). Trusted sites already configured or user allowed to configure them. PowerShell v3 or higher
 
-#to do: hide edge window at all times
-
 param(
     [Switch]$asTask,
     [Switch]$hideConsole
 )
 
-$version = "5.13"
+$version = "5.16"
 
 ####REQUIRED MANUAL CONFIGURATION
 $O365CustomerName      = "lieben"          #This should be the name of your tenant (example, lieben as in lieben.onmicrosoft.com) 
@@ -33,7 +31,8 @@ mapOnlyForSpecificGroup = this only works for DOMAIN JOINED devices that can rea
 #DEFAULT SETTINGS: (onedrive only, to the X: drive)
 $desiredMappings =  @(
     @{"displayName"="Onedrive for Business";"targetLocationType"="driveletter";"targetLocationPath"="X:";"sourceLocationPath"="autodetect";"mapOnlyForSpecificGroup"=""}
-    @{"displayName"="Sharepoint Site A";"targetLocationType"="driveletter";"targetLocationPath"="Z:";"sourceLocationPath"="https://lieben.sharepoint.com/sites/groep30/Gedeelde%20%20documenten/Forms/AllItems.aspx";"mapOnlyForSpecificGroup"=""}
+    #@{"displayName"="Sharepoint Site A";"targetLocationType"="driveletter";"targetLocationPath"="Z:";"sourceLocationPath"="https://lieben.sharepoint.com/sites/groep30/Gedeelde%20%20documenten/Forms/AllItems.aspx";"mapOnlyForSpecificGroup"=""}
+    #@{"displayName"="Sharepoint Site A";"targetLocationType"="driveletter";"targetLocationPath"="Q:";"sourceLocationPath"="https://lieben.sharepoint.com/sites/groep30/Gedeelde%20%20documenten/Brondata";"mapOnlyForSpecificGroup"=""}
 )
 
 <#
@@ -73,6 +72,8 @@ $removeEmptyMaps       = $True                     #Removes any existing empty d
 $logfile               = ($env:APPDATA + "\OneDriveMapper_$version.log")    #Logfile to log to 
 $driversLocation       = ($env:APPDATA)            #location where the Edge and Selenium drivers are located. If not present, these are downloaded automatically 
 $forceHideEdge         = $false                    #Forcibly ensures the user never sees edge/ps windows. Warning: also does not show authentication dialogs, so only useful if your SSO method is working 100%
+$autoClearAllCookies   = $False                    #always clear all cookies before running (prevents/fixes certain occasional issues with cookies)
+$createUserFolderOn    = "Q:"                      #creates a user folder if not already present and maps that instead for the given driveletter(s). If multiple drives, separate them with a comma (e.g. Q:,P:,Z:)
 
 $t = '[DllImport("user32.dll")] public static extern bool ShowWindow(int handle, int state);'
 add-type -name win -member $t -namespace native
@@ -97,7 +98,7 @@ $o365loginURL = "https://login.microsoftonline.com/login.srf?msafed=0"
 $O365CustomerName = $O365CustomerName.ToLower() 
 #for people that don't RTFM, fix wrongly entered customer names:
 $O365CustomerName = $O365CustomerName -Replace ".onmicrosoft.com",""
-$finalURLs = @("https://portal.office.com","https://outlook.office365.com","https://outlook.office.com","https://$($O365CustomerName)-my.sharepoint.com","https://$($O365CustomerName).sharepoint.com","https://www.office.com")
+$finalURLs = @("https://m365.cloud.microsoft","https://portal.office.com","https://outlook.office365.com","https://outlook.office.com","https://$($O365CustomerName)-my.sharepoint.com","https://$($O365CustomerName).sharepoint.com","https://www.office.com")
 
 function log{
     param (
@@ -463,8 +464,13 @@ function startWebDavClient{
         log -text "Attempting to automatically start the WebDav client without elevation..."
         $compilerParameters = New-Object System.CodeDom.Compiler.CompilerParameters
         $compilerParameters.CompilerOptions="/unsafe"
+
         $compilerParameters.GenerateInMemory = $True
-        Add-Type -TypeDefinition $Source -Language CSharp -CompilerParameters $compilerParameters
+        if ($PSVersionTable.PSVersion.Major -eq 5) {
+            Add-Type -TypeDefinition $Source -Language CSharp -CompilerParameters $compilerParameters
+        }elsE{
+            Add-Type -TypeDefinition $Source -Language CSharp -CompilerOptions $compilerParameters
+        }
         [JosL.WebClient.Starter]::startService()
         log -text "Start Service Command completed without errors"
         Start-Sleep -s 5
@@ -569,7 +575,40 @@ function MapDrive{
     Param( 
         $driveMapping
     )
+
     if($driveMapping.targetLocationType -eq "driveletter"){
+        $LASTEXITCODE = 0
+        log -text "Mapping target: $($driveMapping.webDavPath)" 
+        try{$del = NET USE $($driveMapping.targetLocationPath) /DELETE /Y 2>&1}catch{$Null}
+        if($persistentMapping){
+            try{$out = NET USE $($driveMapping.webDavPath) /PERSISTENT:YES 2>&1}catch{$Null}
+        }else{
+            try{$out = NET USE $($driveMapping.webDavPath) /PERSISTENT:NO 2>&1}catch{$Null}
+        }
+        if($out -like "*error 67*"){
+            log -text "ERROR: detected string error 67 in return code of net use command, this usually means the WebClient isn't running" -fout
+        }
+        if($out -like "*error 224*"){
+            log -text "ERROR: detected string error 224 in return code of net use command, this usually means your trusted sites are misconfigured or KB2846960 is missing or Edge needs a reset" -fout
+        }
+        if($LASTEXITCODE -ne 0){ 
+            log -text "Failed to map $($driveMapping.targetLocationPath) to $($driveMapping.webDavPath), error: $($LASTEXITCODE) $($out) $del" -fout
+            $script:errorsForUser += "$($driveMapping.targetLocationPath) could not be mapped because of error $($LASTEXITCODE) $($out) d$del`n"
+        } 
+
+        #check if we need to create a user folder:
+        if($createUserFolderOn -like "*$($driveMapping.targetLocationPath)*"){
+            log -text "this is a mapping we should create a user folder in if it doesn't exist, checking..."
+            $targetUserfolderPath = $Null; $targetUserfolderPath = (Join-Path $driveMapping.webDavPath -ChildPath $env:USERNAME)
+            if(!(Test-Path $targetUserfolderPath)){
+                log -text "creating $targetUserfolderPath ...."
+                $Null = New-Item -Path $targetUserfolderPath -ItemType Directory -Force -Confirm:$False
+                log -text "$targetUserfolderPath created!"
+            }else{
+                log -text "$targetUserfolderPath already exists"
+            }
+            $driveMapping.webDavPath = $targetUserfolderPath
+        }
         $LASTEXITCODE = 0
         log -text "Mapping target: $($driveMapping.webDavPath)" 
         try{$del = NET USE $($driveMapping.targetLocationPath) /DELETE /Y 2>&1}catch{$Null}
@@ -958,7 +997,11 @@ try{
     $compilerParameters = New-Object System.CodeDom.Compiler.CompilerParameters
     $compilerParameters.CompilerOptions="/unsafe"
     $compilerParameters.GenerateInMemory = $True
-    Add-Type -TypeDefinition $source -Language CSharp -CompilerParameters $compilerParameters
+    if ($PSVersionTable.PSVersion.Major -eq 5) {
+        Add-Type -TypeDefinition $source -Language CSharp -CompilerParameters $compilerParameters
+    }elsE{
+        Add-Type -TypeDefinition $Source -Language CSharp -CompilerOptions $compilerParameters
+    }    
     [DateTime]$dateTime = Get-Date
     $dateTime = $dateTime.AddDays(1)
     $str = $dateTime.ToString("R")
@@ -1197,7 +1240,13 @@ if($autoDetectProxy -eq $False){
     }
 }
 
-$baseURL = ("https://$($O365CustomerName)-my.sharepoint.com/_layouts/15/MySite.aspx?MySiteRedirect=AllDocuments") 
+if($autoClearAllCookies){
+    log -text "Clearing cookies..."
+    & RunDll32.exe InetCpl.cpl,ClearMyTracksByProcess 2
+    Start-Sleep -s 10
+}
+
+$baseURL = ("https://$($O365CustomerName)-my.sharepoint.com/my") 
 $mapURLpersonal = "\\$O365CustomerName-my.sharepoint.com@SSL\DavWWWRoot\personal\"
 
 $intendedmappings = @()
@@ -1205,7 +1254,7 @@ for($count=0;$count -lt $desiredMappings.Count;$count++){
     #replace funky sharepoint URL stuff and turn into webdav path
     if($desiredMappings[$count].sourceLocationPath -ne "autodetect"){
         $desiredMappings[$count].webDavPath = [System.Web.HttpUtility]::UrlDecode($desiredMappings[$count].sourceLocationPath)
-        $desiredMappings[$count].webDavPath = $desiredMappings[$count].webDavPath.Replace("https://","\\").Replace("/_layouts/15/start.aspx#","").Replace("sharepoint.com","sharepoint.com@SSL\DavWWWRoot").Replace("/Forms/AllItems.aspx","")
+        $desiredMappings[$count].webDavPath = $desiredMappings[$count].webDavPath.Replace("https://","\\").Replace("/_layouts/15/start.aspx#","").Replace("sharepoint.com","sharepoint.com@SSL\DavWWWRoot").Replace("/Forms/AllItems.aspx","").Replace("%27","'")
         $desiredMappings[$count].webDavPath = $desiredMappings[$count].webDavPath.Replace("/","\")  
     }else{
         $desiredMappings[$count].webDavPath = $mapURLpersonal
@@ -1375,9 +1424,9 @@ while($true){
         $global:edgeOptions.addArguments("proxy-server='direct://'")
         $global:edgeOptions.addArguments("proxy-bypass-list=*")
         $global:edgeOptions.addArguments("disk-cache-size=262144")
-        $global:edgeOptions.addArguments("--app=https://www.google.nl")       
+        $global:edgeOptions.addArguments("--user-agent=Mozilla/5.0 (Windows NT 10.0; WOW64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/39.0.2171.71 Safari/537.36 Edge/12.0 OneDriveMapper/$version")
         if($forceHideEdge){
-            $global:edgeOptions.addArguments("headless")
+            $global:edgeOptions.addArguments("--headless=new")
         }         
         $global:edgeDriverService = [OpenQA.Selenium.Edge.EdgeDriverService]::CreateDefaultService($driversLocation,"msedgedriver.exe")
         $global:edgeDriverService.HideCommandPromptWindow = $true
@@ -1399,7 +1448,7 @@ while($true){
 
     #cache HWND's of the new Edge window and then hide it until we need user-input
     try{
-        $global:cachedHwnds = (Get-Process -ErrorAction SilentlyContinue -Id (gwmi win32_process | ? parentprocessid -eq $((gwmi win32_process | ? {$_.parentprocessid -eq $PID -and $_.name -eq "msedgedriver.exe"})).ProcessId).ProcessId).MainWindowHandle | Where-Object{$_ -ne 0}
+        $global:cachedHwnds = (Get-Process -ErrorAction SilentlyContinue -Id (Get-WmiObject win32_process | ? parentprocessid -eq $((Get-WmiObject win32_process | ? {$_.parentprocessid -eq $PID -and $_.name -eq "msedgedriver.exe"})).ProcessId).ProcessId).MainWindowHandle | Where-Object{$_ -ne 0}
     }catch{
         log -text "Failed to cache Edge Window Handles $($Error[0])" -fout
     }
@@ -1455,7 +1504,7 @@ while($true){
         if($intendedMappings[$count].mapped){continue}
         if($intendedMappings[$count].sourceLocationPath -eq "autodetect"){
             $timeSpent = 0
-            while($global:edgeDriver.Url.IndexOf("/personal/") -eq -1){
+            while($global:edgeDriver.PageSource.IndexOf("webAbsoluteUrl") -eq -1){
                 Start-Sleep -s 2
                 $timeSpent+=2
                 log -text "Attempting to detect username at $($global:edgeDriver.Url), waited for $timeSpent seconds" 
@@ -1469,9 +1518,9 @@ while($true){
                 }
             }
             try{
-                $start = $global:edgeDriver.Url.IndexOf("/personal/")+10 
-                $end = $global:edgeDriver.Url.IndexOf("/",$start) 
-                $userURL = $global:edgeDriver.Url.Substring($start,$end-$start) 
+                $start = $global:edgeDriver.PageSource.IndexOf("/personal/")+10 
+                $end = $global:edgeDriver.PageSource.IndexOf("`"",$start) 
+                $userURL = $global:edgeDriver.PageSource.Substring($start,$end-$start).Replace("%27","'")
                 $mapURL = $mapURLpersonal + $userURL + "\" + $libraryName 
             }catch{
                 log -text "Failed to get the username while at $($global:edgeDriver.Url), aborting" -fout
@@ -1492,7 +1541,7 @@ while($true){
             log -text "Current location: $($global:edgeDriver.Url)" 
             $global:edgeDriver.Navigate().GoToUrl($spURL) #check the URL
             $waited = 0
-            while($($global:edgeDriver.Url) -notlike "$spURL*"){
+            while(!$($global:edgeDriver.Url.StartsWith("https://$($O365CustomerName).sharepoint.com"))){
                 start-AuthCheck
                 Start-Sleep -s 1
                 $waited++
@@ -1510,7 +1559,9 @@ while($true){
     }
 
     for($count=0;$count -lt $intendedMappings.Count;$count++){
+        #map the drive
         $intendedMappings[$count].mapped = MapDrive $intendedMappings[$count]
+
         if($intendedMappings[$count].sourceLocationPath -eq "autodetect"){       
             if($addShellLink -and $windowsVersion -eq 6 -and $intendedMappings[$count].targetLocationType -eq "driveletter" -and [System.IO.Directory]::Exists($intendedMappings[$count].targetLocationPath)){
                 try{
