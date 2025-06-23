@@ -2882,25 +2882,18 @@ if($autoMapFavoriteSites){
         log -text "Retrieving favorited sites because autoMapFavoriteSites is set to TRUE"
         $res = New-WebRequest -url "https://$O365CustomerName.sharepoint.com/_layouts/15/sharepoint.aspx?v=following" -method GET -accept "application/json;odata=verbose"
         $res = handleO365Redirect -res $res
-        $start = $res.content.IndexOf(":sites/followed")
-        if($start -eq -1){
-            log -text "Failed to detect the start of the followed sites JSON in the response, aborting" -fout
-        }else{
-            $start = $start + ":sites/followed".Length + 2
-            $end = $res.content.IndexOf("}],",$start)
-            $json = $res.content.Substring($start,$end-$start+1)
-            $test = $json | ConvertFrom-Json -NoEnumerate
-        }
+        $res = New-WebRequest -url "https://$($O365CustomerName).sharepoint.com/_api/v2.1/favorites/followedSites?%24expand=contentTypes&%24top=100 " -method GET -accept "application/json;odata=minimal"
+        $res = handleO365Redirect -res $res
     }catch{
         log -text "error retrieving favorited sites $($Error[0])" -fout
     }
     try{
         $res = (handleO365Redirect -res $res)[0]
-        $results = ($res.Content | convertfrom-json).value
+        $results = $res.content | ConvertFrom-Json
     }catch{
         continue
     }   
-    foreach($result in $results){
+    foreach($result in $results.value){
         $desiredUrl = $result.webUrl.Replace("https://","\\").Replace("/_layouts/15/start.aspx#","").Replace("sharepoint.com/","sharepoint.com@SSL\DavWWWRoot\").Replace("/Forms/AllItems.aspx","").Replace("/","\")
         if($autoMapFavoritesMode -eq "Normal"){
             Foreach ($drvletter in $autoMapFavoritesDrvLetterList.ToCharArray()) {
