@@ -1518,7 +1518,7 @@ while($true){
                 }
             }
             try{
-                $start = $global:edgeDriver.PageSource.IndexOf("/personal/")+10 
+                $start = $global:edgeDriver.PageSource.IndexOf("sharepoint.com/personal/")+10 
                 $end = $global:edgeDriver.PageSource.IndexOf("`"",$start) 
                 $userURL = $global:edgeDriver.PageSource.Substring($start,$end-$start).Replace("%27","'")
                 $mapURL = $mapURLpersonal + $userURL + "\" + $libraryName 
