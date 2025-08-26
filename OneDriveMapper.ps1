@@ -12,7 +12,7 @@ param(
     [Switch]$hideConsole
 )
 
-$version = "5.16"
+$version = "5.17"
 
 ####REQUIRED MANUAL CONFIGURATION
 $O365CustomerName      = "lieben"          #This should be the name of your tenant (example, lieben as in lieben.onmicrosoft.com) 
@@ -1518,8 +1518,64 @@ while($true){
                 }
             }
             try{
-                $start = $global:edgeDriver.PageSource.IndexOf("sharepoint.com/personal/")+24 
-                $end = $global:edgeDriver.PageSource.IndexOf("`"",$start) 
+                # Smarter extraction of the personal site slug (user part after /personal/)
+                $ps = [string]$global:edgeDriver.PageSource
+                $userSlug = $null
+
+                # 1) Prefer current URL
+                $m = [regex]::Match([string]$global:edgeDriver.Url, '/personal/([^/?#"''\\]+)')
+                if($m.Success){ $userSlug = $m.Groups[1].Value }
+
+                # 2) Try unescaped HTML in page source
+                if(-not $userSlug){
+                    $m = [regex]::Match($ps, 'sharepoint\.com/personal/([^/"''\\?]+)')
+                    if($m.Success){ $userSlug = $m.Groups[1].Value }
+                }
+
+                # 3) Try escaped JSON in page source (…\/personal\/…)
+                if(-not $userSlug){
+                    $m = [regex]::Match($ps, 'sharepoint\.com\\\/personal\\\/([^\\\/"''\?]+)')
+                    if($m.Success){ $userSlug = $m.Groups[1].Value }
+                }
+
+                # 4) Try SharePoint context via JS
+                if(-not $userSlug){
+                    try{
+                        $siteUrl = $global:edgeDriver.ExecuteScript('return (window._spPageContextInfo && (_spPageContextInfo.siteAbsoluteUrl || _spPageContextInfo.webAbsoluteUrl)) || document.location.href;')
+                        if($siteUrl){
+                            $m = [regex]::Match([string]$siteUrl, '/personal/([^/?#"''\\]+)')
+                            if($m.Success){ $userSlug = $m.Groups[1].Value }
+                        }
+                    }catch{ $null }
+                }
+
+                if($userSlug){
+                    # Make Substring() below return the slug we found
+                    $slugIndexInPs = $ps.IndexOf($userSlug)
+                    if($slugIndexInPs -ge 0){
+                        $start = $slugIndexInPs
+                        $end   = $start + $userSlug.Length
+                    }else{
+                        # Fall back to locating the /personal/ token in page source
+                        $token = 'sharepoint.com/personal/'
+                        $idx   = $ps.IndexOf($token)
+                        if($idx -lt 0){
+                            $token = 'sharepoint.com\/personal\/'
+                            $idx   = $ps.IndexOf($token)
+                        }
+                        if($idx -ge 0){
+                            $start = $idx + $token.Length
+                            $slash = $ps.IndexOf('/', $start)
+                            if($slash -lt 0){ $slash = $ps.IndexOf([char]34, $start) } # "
+                            if($slash -lt 0){ $slash = $ps.Length }
+                            $end = $slash
+                        }else{
+                            throw "Could not locate OneDrive personal site slug in page source."
+                        }
+                    }
+                }else{
+                    throw "Failed to detect OneDrive personal site slug from URL, page, or context."
+                }
                 $userURL = $global:edgeDriver.PageSource.Substring($start,$end-$start).Replace("%27","'")
                 $mapURL = $mapURLpersonal + $userURL + "\" + $libraryName 
             }catch{
