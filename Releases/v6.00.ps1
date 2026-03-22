@@ -71,13 +71,13 @@ $desiredMappings = @(
         sourceLocationPath      = 'autodetect'
         mapOnlyForSpecificGroup = ''
     }
-    @{
-        displayName             = 'Sharepoint Site'
-        targetLocationType      = 'driveletter'
-        targetLocationPath      = 'Z:'
-        sourceLocationPath      = 'https://lieben.sharepoint.com/sites/invoicing/Gedeelde%20documenten'
-        mapOnlyForSpecificGroup = ''
-    }
+    #@{
+    #    displayName             = 'Sharepoint Site'
+    #    targetLocationType      = 'driveletter'
+    #    targetLocationPath      = 'Z:'
+    #    sourceLocationPath      = 'https://lieben.sharepoint.com/sites/testing/Gedeelde%20documenten'
+    #    mapOnlyForSpecificGroup = ''
+    #}
 )
 
 # Folder redirection (moves Desktop/Documents/Pictures into the OneDrive drive)
@@ -107,6 +107,7 @@ $convergedDriveLabel   = 'SharePoint and Team sites'
 $showProgressBar       = $true
 $progressBarColor      = '#CC99FF'
 $progressBarText       = "OneDriveMapper v$version is connecting your drives..."
+$showSystemTrayIcon    = $true                # Show status icon in system tray
 
 # OPTIONAL - Authentication
 $edgeWaitSeconds       = 10                   # Seconds to wait for silent PRT SSO
@@ -125,9 +126,12 @@ $sharepointIconPath    = ''
 
 #region ===== CONSTANTS =====
 
-$privateSuffix       = '-my'
-$script:errorsForUser = ''
-$O365CustomerName    = $O365CustomerName.ToLower() -replace '\.onmicrosoft\.com', ''
+$privateSuffix         = '-my'
+$script:errorsForUser  = ''
+$script:traySync       = $null
+$script:trayRunspace   = $null
+$script:trayPS         = $null
+$O365CustomerName      = $O365CustomerName.ToLower() -replace '\.onmicrosoft\.com', ''
 
 #endregion
 
@@ -350,9 +354,9 @@ function Restart-ExplorerProcess {
     [CmdletBinding()]
     param()
     Write-Log -Text 'Restarting Explorer.exe to refresh drive visibility'
-    $procs = Get-ExplorerProcessForCurrentUser
-    if ($procs -is [Array]) {
-        foreach ($p in $procs) {
+    $procs = @(Get-ExplorerProcessForCurrentUser)
+    foreach ($p in $procs) {
+        if ($p -is [CimInstance]) {
             try { Stop-Process -Id $p.handle -Force -ErrorAction Stop } catch { }
         }
     }
@@ -683,6 +687,9 @@ function Get-SharePointCookiesViaCDP {
         return $null
     }
     finally {
+        if ($ws)  { try { $ws.Dispose()  } catch { } }
+        if ($cts) { try { $cts.Dispose() } catch { } }
+        if ($wc)  { try { $wc.Dispose()  } catch { } }
         if ($edgeProc -and -not $edgeProc.HasExited) {
             try { $edgeProc.Kill() } catch { }
             Start-Sleep -Milliseconds 500
@@ -1286,47 +1293,168 @@ if ($convergedDrives.Count -gt 0) {
 
 while ($true) {
 
-    # ---- Progress bar ----
+    # ---- Progress bar (modern dark toast) ----
     $form1 = $null
-    $progressBar1 = $null
+    $progressFill = $null
     $label1 = $null
+    $progressTrackW = 0
+    $accentColor = [Drawing.ColorTranslator]::FromHtml($progressBarColor)
 
     if ($showProgressBar) {
-        $w = 450; $h = 39
+        $w = 380; $h = 56; $pad = 16; $trackH = 4
+        $progressTrackW = $w - $pad * 2
+
         $form1 = New-Object Windows.Forms.Form
         $form1.Text = "OneDriveMapper v$version"
         $form1.Size = $form1.MaximumSize = $form1.MinimumSize = New-Object Drawing.Size($w, $h)
-        $form1.BackColor = 'White'
+        $form1.BackColor = [Drawing.Color]::FromArgb(45, 45, 48)
         $form1.ControlBox = $false
         $form1.FormBorderStyle = 'None'
+        $form1.ShowInTaskbar = $false
         $form1.StartPosition = 'Manual'
-        $screen = ([Windows.Forms.Screen]::AllScreens | Where-Object { $_.Primary }).WorkingArea
-        $form1.Location = New-Object Drawing.Size(($screen.Right - $w), ($screen.Bottom - $h))
+        $form1.Location = New-Object Drawing.Point(-9999, -9999)  # Start off-screen
         $form1.TopMost = $true
+        $form1.Opacity = 0.95
+
+        # Rounded corners
+        $radius = 8
+        $gp = New-Object Drawing.Drawing2D.GraphicsPath
+        $gp.AddArc(0, 0, $radius * 2, $radius * 2, 180, 90)
+        $gp.AddArc($w - $radius * 2 - 1, 0, $radius * 2, $radius * 2, 270, 90)
+        $gp.AddArc($w - $radius * 2 - 1, $h - $radius * 2 - 1, $radius * 2, $radius * 2, 0, 90)
+        $gp.AddArc(0, $h - $radius * 2 - 1, $radius * 2, $radius * 2, 90, 90)
+        $gp.CloseFigure()
+        $form1.Region = New-Object Drawing.Region($gp)
+        $gp.Dispose()
 
         $label1 = New-Object Windows.Forms.Label
         $label1.Text = $progressBarText
-        $label1.Location = New-Object Drawing.Point(0, 9)
-        $label1.Size = New-Object Drawing.Size($w, 17)
-        $label1.Font = 'Verdana'
+        $label1.Location = New-Object Drawing.Point($pad, 12)
+        $label1.Size = New-Object Drawing.Size(($w - $pad * 2), 20)
+        $label1.Font = New-Object Drawing.Font('Segoe UI', 9)
+        $label1.ForeColor = [Drawing.Color]::FromArgb(240, 240, 240)
+        $label1.BackColor = [Drawing.Color]::Transparent
 
-        $topBar = New-Object Windows.Forms.Label
-        $topBar.Location = New-Object Drawing.Point(0, 0)
-        $topBar.Size = New-Object Drawing.Size($w, 7)
-        $topBar.BackColor = $progressBarColor
+        $progressTrack = New-Object Windows.Forms.Panel
+        $progressTrack.Location = New-Object Drawing.Point($pad, 38)
+        $progressTrack.Size = New-Object Drawing.Size($progressTrackW, $trackH)
+        $progressTrack.BackColor = [Drawing.Color]::FromArgb(70, 70, 70)
 
-        $progressBar1 = New-Object Windows.Forms.ProgressBar
-        $progressBar1.Value = 0
-        $progressBar1.Style = 'Continuous'
-        $progressBar1.Size = New-Object Drawing.Size($w, 10)
-        $progressBar1.Location = New-Object Drawing.Point(0, 29)
+        $progressFill = New-Object Windows.Forms.Panel
+        $progressFill.Location = New-Object Drawing.Point(0, 0)
+        $progressFill.Size = New-Object Drawing.Size(0, $trackH)
+        $progressFill.BackColor = $accentColor
 
-        $form1.Controls.AddRange(@($label1, $topBar, $progressBar1))
-        $form1.Show() | Out-Null
-        $form1.Focus() | Out-Null
-        $progressBar1.Value = 5
+        $progressTrack.Controls.Add($progressFill)
+        $form1.Controls.AddRange(@($label1, $progressTrack))
+        [void]$form1.Show()
+        # Position after Show - all layout resets have already happened at (-9999,-9999)
+        $screen = ([Windows.Forms.Screen]::AllScreens | Where-Object { $_.Primary }).WorkingArea
+        $form1.SetDesktopLocation(($screen.Right - $w - 12), ($screen.Bottom - $h - 12))
+        [void]$form1.Focus()
+        $progressFill.Width = [int]($progressTrackW * 5 / 100)
         $form1.Refresh()
     }
+
+    # ---- System tray icon (runs in its own runspace with a proper message loop) ----
+    if ($showSystemTrayIcon -and -not $script:traySync) {
+        try {
+            $script:traySync = [hashtable]::Synchronized(@{
+                Text          = "OneDriveMapper v$version"
+                BalloonTitle  = ''
+                BalloonMsg    = ''
+                BalloonIcon   = 'Info'
+                ShowBalloon   = $false
+                ExitRequested = $false
+                LogFile       = $logfile
+            })
+            $script:trayRunspace = [runspacefactory]::CreateRunspace()
+            $script:trayRunspace.ApartmentState = 'STA'
+            $script:trayRunspace.ThreadOptions = 'ReuseThread'
+            $script:trayRunspace.Open()
+            $script:trayRunspace.SessionStateProxy.SetVariable('sync', $script:traySync)
+
+            $script:trayPS = [powershell]::Create().AddScript({
+                param($accentHtml, $ver)
+                [void][System.Reflection.Assembly]::LoadWithPartialName('System.Drawing')
+                [void][System.Reflection.Assembly]::LoadWithPartialName('System.Windows.Forms')
+
+                $accentColor = [Drawing.ColorTranslator]::FromHtml($accentHtml)
+                $icon = New-Object Windows.Forms.NotifyIcon
+
+                # Draw cloud icon with upload arrow
+                $bmp = New-Object Drawing.Bitmap(16, 16)
+                $g = [Drawing.Graphics]::FromImage($bmp)
+                $g.SmoothingMode = 'AntiAlias'
+                $g.Clear([Drawing.Color]::Transparent)
+                $fill = New-Object Drawing.SolidBrush($accentColor)
+                $g.FillEllipse($fill, 2, 5, 12, 9)
+                $g.FillEllipse($fill, 4, 2, 8, 8)
+                $g.FillEllipse($fill, 1, 6, 6, 7)
+                $g.FillEllipse($fill, 9, 6, 6, 7)
+                $pen = New-Object Drawing.Pen([Drawing.Color]::White, 1.6)
+                $pen.StartCap = $pen.EndCap = [Drawing.Drawing2D.LineCap]::Round
+                $g.DrawLine($pen, 8, 12, 8, 7)
+                $g.DrawLine($pen, 5.5, 9.5, 8, 7)
+                $g.DrawLine($pen, 10.5, 9.5, 8, 7)
+                $pen.Dispose(); $fill.Dispose(); $g.Dispose()
+                $icon.Icon = [Drawing.Icon]::FromHandle($bmp.GetHicon())
+                $bmp.Dispose()
+
+                $icon.Text = "OneDriveMapper v$ver"
+                $icon.Visible = $true
+
+                # Context menu
+                $menu = New-Object Windows.Forms.ContextMenuStrip
+                $logItem = New-Object Windows.Forms.ToolStripMenuItem('Open log file')
+                $logItem.Add_Click({
+                    $lf = $sync.LogFile
+                    if ($lf -and (Test-Path $lf)) { Start-Process notepad.exe $lf }
+                })
+                $sep = New-Object Windows.Forms.ToolStripSeparator
+                $exitItem = New-Object Windows.Forms.ToolStripMenuItem('Exit OneDriveMapper')
+                $exitItem.Add_Click({
+                    $sync.ExitRequested = $true
+                    $icon.Visible = $false; $icon.Dispose()
+                    [Windows.Forms.Application]::ExitThread()
+                })
+                [void]$menu.Items.Add($logItem)
+                [void]$menu.Items.Add($sep)
+                [void]$menu.Items.Add($exitItem)
+                $icon.ContextMenuStrip = $menu
+
+                # Timer polls the sync hashtable for updates from the main script
+                $timer = New-Object Windows.Forms.Timer
+                $timer.Interval = 250
+                $timer.Add_Tick({
+                    if ($sync.ExitRequested) {
+                        $timer.Stop()
+                        $icon.Visible = $false; $icon.Dispose()
+                        [Windows.Forms.Application]::ExitThread()
+                        return
+                    }
+                    $icon.Text = $sync.Text
+                    if ($sync.ShowBalloon) {
+                        $sync.ShowBalloon = $false
+                        $tipIcon = switch ($sync.BalloonIcon) {
+                            'Warning' { [Windows.Forms.ToolTipIcon]::Warning }
+                            'Error'   { [Windows.Forms.ToolTipIcon]::Error }
+                            default   { [Windows.Forms.ToolTipIcon]::Info }
+                        }
+                        $icon.ShowBalloonTip(3000, $sync.BalloonTitle, $sync.BalloonMsg, $tipIcon)
+                    }
+                })
+                $timer.Start()
+
+                [Windows.Forms.Application]::Run()
+            }).AddArgument($progressBarColor).AddArgument($version)
+
+            $script:trayPS.Runspace = $script:trayRunspace
+            $null = $script:trayPS.BeginInvoke()
+        }
+        catch { <# Non-critical if tray icon fails #> }
+    }
+    if ($script:traySync) { $script:traySync.Text = "OneDriveMapper v$version - Connecting..." }
 
     # ---- Determine unique hosts that need authentication ----
     $authTargets = [ordered]@{}  # host -> URL
@@ -1348,7 +1476,8 @@ while ($true) {
 
     Write-Log -Text "Authenticating to $($authTargets.Count) unique host(s): $($authTargets.Keys -join ', ')"
 
-    if ($showProgressBar) { $progressBar1.Value = 10; $form1.Refresh() }
+    if ($showProgressBar) { $progressFill.Width = [int]($progressTrackW * 10 / 100); $form1.Refresh() }
+    [Windows.Forms.Application]::DoEvents()
 
     # ---- Authenticate and inject cookies for each host ----
     $authResults     = @{}
@@ -1375,9 +1504,10 @@ while ($true) {
 
         $hostIndex++
         if ($showProgressBar) {
-            $progressBar1.Value = [Math]::Min(10 + ($hostIndex * $progressPerHost), 70)
+            $progressFill.Width = [int]($progressTrackW * [Math]::Min(10 + ($hostIndex * $progressPerHost), 70) / 100)
             $form1.Refresh()
         }
+        [Windows.Forms.Application]::DoEvents()
     }
 
     # ---- Resolve OneDrive autodetect user slug ----
@@ -1423,7 +1553,8 @@ while ($true) {
         }
     }
 
-    if ($showProgressBar) { $progressBar1.Value = 75; $form1.Refresh() }
+    if ($showProgressBar) { $progressFill.Width = [int]($progressTrackW * 75 / 100); $form1.Refresh() }
+    [Windows.Forms.Application]::DoEvents()
 
     # ---- Map drives ----
     for ($i = 0; $i -lt $intendedMappings.Count; $i++) {
@@ -1453,12 +1584,22 @@ while ($true) {
         }
 
         if ($showProgressBar) {
-            $progressBar1.Value = [Math]::Min(75 + ($i * 5), 90)
+            $progressFill.Width = [int]($progressTrackW * [Math]::Min(75 + ($i * 5), 90) / 100)
             $form1.Refresh()
         }
+        [Windows.Forms.Application]::DoEvents()
     }
 
-    if ($showProgressBar) { $progressBar1.Value = 90; $form1.Refresh() }
+    # ---- Close progress bar ----
+    if ($showProgressBar -and $form1) {
+        $progressFill.Width = $progressTrackW
+        $label1.Text = 'Done!'
+        $form1.Refresh()
+        Start-Sleep -Milliseconds 600
+        $form1.Close()
+        $form1.Dispose()
+        $form1 = $null
+    }
 
     # ---- Folder redirection ----
     if ($redirectFolders) {
@@ -1482,6 +1623,14 @@ while ($true) {
     $successCount = @($intendedMappings | Where-Object { $_.mapped }).Count
     $failCount    = $intendedMappings.Count - $successCount
     Write-Log -Text "Mapping complete: $successCount succeeded, $failCount failed"
+    if ($script:traySync) {
+        $trayMsg = if ($failCount -eq 0) { "$successCount drive(s) connected" } else { "$successCount OK, $failCount failed" }
+        $script:traySync.Text = "OneDriveMapper v$version - $trayMsg"
+        $script:traySync.BalloonTitle = 'OneDriveMapper'
+        $script:traySync.BalloonMsg = $trayMsg
+        $script:traySync.BalloonIcon = if ($failCount -eq 0) { 'Info' } else { 'Warning' }
+        $script:traySync.ShowBalloon = $true
+    }
 
     foreach ($mapping in $intendedMappings) {
         $status = if ($mapping.mapped) { 'OK' } else { 'FAILED' }
@@ -1489,13 +1638,6 @@ while ($true) {
     }
 
     # ---- Cleanup ----
-    if ($showProgressBar) {
-        $progressBar1.Value = 100
-        $label1.Text = 'Done!'
-        $form1.Refresh()
-        Start-Sleep -Milliseconds 800
-        $form1.Close()
-    }
 
     if ($restartExplorer) {
         Restart-ExplorerProcess
@@ -1526,6 +1668,7 @@ while ($true) {
     }
 
     Write-Log -Text "Auto-remap enabled ($autoRemapMethod). Monitoring drive health..."
+    if ($script:traySync) { $script:traySync.Text = "OneDriveMapper v$version - Monitoring $($successfulMappings.Count) drive(s)" }
     $script:errorsForUser = ''  # Reset for next cycle
 
     :escape while ($true) {
@@ -1536,7 +1679,7 @@ while ($true) {
 
             # First check: does the drive letter / shortcut / link still exist?
             $linkExists = switch ($mapping.targetLocationType) {
-                'networklocation' { Test-Path (Join-Path $mapping.targetLocationPath "$($mapping.displayName).lnk") }
+                'networklocation' { Test-Path (Join-Path $mapping.targetLocationPath $mapping.displayName) }
                 'driveletter'     { Test-Path $mapping.targetLocationPath }
                 'converged'       { Test-Path (Join-Path $mapping.targetLocationPath $mapping.displayName) }
                 default           { $true }
@@ -1566,19 +1709,41 @@ while ($true) {
                 }
 
                 Write-Log -Text 'Internet confirmed - triggering remap'
+                if ($script:traySync) {
+                    $script:traySync.BalloonTitle = 'OneDriveMapper'
+                    $script:traySync.BalloonMsg = "'$($mapping.displayName)' disconnected - remapping..."
+                    $script:traySync.BalloonIcon = 'Warning'
+                    $script:traySync.ShowBalloon = $true
+                }
                 $mapping.mapped = $false
                 Start-Sleep -Seconds 2
                 break escape
             }
 
+            # Check if user requested exit via tray icon
+            if ($script:traySync -and $script:traySync.ExitRequested) { break escape }
+
             $sleep = Get-Random -Minimum 5 -Maximum 20
             Start-Sleep -Seconds $sleep
         }
+
+        # Check for exit between scan cycles
+        if ($script:traySync -and $script:traySync.ExitRequested) { break escape }
     }
+
+    # If user clicked Exit, stop the whole script
+    if ($script:traySync -and $script:traySync.ExitRequested) { break }
 
     Write-Log -Text 'Auto-remap triggered - re-authenticating and remapping...'
 }
 
 #endregion
 
+if ($script:traySync) {
+    $script:traySync.ExitRequested = $true
+    Start-Sleep -Milliseconds 500
+}
+if ($script:trayRunspace) {
+    try { $script:trayRunspace.Close() } catch { }
+}
 Write-Log -Text "===== OneDriveMapper v$version finished ====="
