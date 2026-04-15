@@ -1,7 +1,7 @@
 ﻿#Requires -Version 5.1
 <#
 .SYNOPSIS
-    OneDriveMapper v6.00 - Maps OneDrive for Business and SharePoint libraries as network drives.
+    OneDriveMapper v6.01 - Maps OneDrive for Business and SharePoint libraries as network drives.
 
 .DESCRIPTION
     Maps OneDrive for Business and/or SharePoint Online document libraries as Windows drive letters
@@ -50,7 +50,7 @@ $ErrorActionPreference = 'Continue'
 
 #region ===== CONFIGURATION =====
 
-$version = '6.00'
+$version = '6.01'
 
 # REQUIRED - set your tenant name (e.g. 'contoso' from contoso.onmicrosoft.com)
 $O365CustomerName = 'lieben'
@@ -102,6 +102,10 @@ $autoDetectProxy       = $false               # Disable IE auto-proxy detection 
 $addShellLink          = $false               # Create a Favorites shortcut for OneDrive
 $createUserFolderOn    = ''                   # Drive letter on which to create per-user folder (e.g. 'Q:')
 $convergedDriveLabel   = 'SharePoint and Team sites'
+
+# OPTIONAL - Identity override (set to your O365 UPN if the script picks the wrong username
+# for OneDrive personal, e.g. on devices joined to a non-Entra AD like Synology DSM)
+$o365UserLogin         = ''                   # e.g. 'john@contoso.com' - leave empty for auto-detect
 
 # OPTIONAL - Progress bar
 $showProgressBar       = $true
@@ -484,11 +488,13 @@ function Test-DeviceState {
     if ($prt) { Write-Log -Text 'Primary Refresh Token (PRT) is active' }
     else      { Write-Log -Text 'No active PRT detected - silent SSO may not work' -IsWarning }
 
+    $userEmail = $null
     if ($output -match 'UserEmail\s*:\s*(\S+)') {
-        Write-Log -Text "Signed-in user: $($Matches[1])"
+        $userEmail = $Matches[1]
+        Write-Log -Text "Signed-in user: $userEmail"
     }
 
-    return @{ AadJoined = $joined; HasPrt = $prt }
+    return @{ AadJoined = $joined; HasPrt = $prt; UserEmail = $userEmail }
 }
 
 function Find-EdgePath {
@@ -726,6 +732,56 @@ function Invoke-Authentication {
 
     Write-Log -Text "Authentication failed for $Url" -IsError
     return $null
+}
+
+function Get-OneDrivePersonalUrl {
+    <#
+    .SYNOPSIS
+        Queries the SharePoint User Profile REST API to discover the user's personal OneDrive URL.
+    .DESCRIPTION
+        Uses the FedAuth/rtFa cookies already obtained during authentication to call the
+        PeopleManager API on the tenant's -my host. Returns the user slug extracted from
+        the PersonalUrl property, or $null on failure.
+    .OUTPUTS
+        String (user slug, e.g. 'john_contoso_com') or $null.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)][string]$TenantMyHost,
+        [Parameter(Mandatory)][string]$FedAuth,
+        [Parameter(Mandatory)][string]$RtFa
+    )
+
+    try {
+        $apiUrl = "https://$TenantMyHost/_api/SP.UserProfiles.PeopleManager/GetMyProperties?`$select=PersonalUrl"
+        $request = [System.Net.HttpWebRequest]::Create($apiUrl)
+        $request.Method = 'GET'
+        $request.Accept = 'application/json;odata=verbose'
+        $request.Headers.Add('Cookie', "FedAuth=$FedAuth;rtFa=$RtFa")
+        $request.AllowAutoRedirect = $true
+        $request.Timeout = 15000
+
+        $response = $request.GetResponse()
+        $reader   = New-Object System.IO.StreamReader($response.GetResponseStream())
+        $body     = $reader.ReadToEnd()
+        $reader.Close()
+        $response.Close()
+
+        $json = $body | ConvertFrom-Json
+        $personalUrl = $json.d.PersonalUrl
+        if ($personalUrl) {
+            $m = [regex]::Match($personalUrl, '/personal/([^/?#]+)')
+            if ($m.Success) {
+                return $m.Groups[1].Value
+            }
+        }
+        Write-Log -Text "REST API returned PersonalUrl but could not extract user slug: $personalUrl" -IsWarning
+        return $null
+    }
+    catch {
+        Write-Log -Text "SharePoint User Profile API call failed: $_" -IsWarning
+        return $null
+    }
 }
 
 function Set-WinINETCookies {
@@ -1516,19 +1572,47 @@ while ($true) {
         $finalUrl = $authResults[$odHost].FinalUrl
         $userSlug = $null
 
-        # Method 1: Extract from redirect URL
-        $m = [regex]::Match($finalUrl, '/personal/([^/?#]+)')
-        if ($m.Success) {
-            $userSlug = $m.Groups[1].Value
-            Write-Log -Text "OneDrive user detected from URL: $userSlug"
+        # Method 1: Explicit config override ($o365UserLogin)
+        if (-not $userSlug -and $o365UserLogin) {
+            $userSlug = $o365UserLogin.Trim() -replace '@', '_' -replace '\.', '_'
+            Write-Log -Text "OneDrive user from config override ($o365UserLogin): $userSlug"
         }
 
-        # Method 2: Derive from UPN (e.g. user@domain.com -> user_domain_com)
+        # Method 2: Extract from redirect URL
+        if (-not $userSlug) {
+            $m = [regex]::Match($finalUrl, '/personal/([^/?#]+)')
+            if ($m.Success) {
+                $userSlug = $m.Groups[1].Value
+                Write-Log -Text "OneDrive user detected from URL: $userSlug"
+            }
+        }
+
+        # Method 3: SharePoint User Profile REST API
+        if (-not $userSlug) {
+            Write-Log -Text 'Querying SharePoint User Profile API for personal site URL...'
+            $userSlug = Get-OneDrivePersonalUrl -TenantMyHost $odHost `
+                -FedAuth $authResults[$odHost].FedAuth `
+                -RtFa $authResults[$odHost].rtFa
+            if ($userSlug) {
+                Write-Log -Text "OneDrive user detected from REST API: $userSlug"
+            }
+        }
+
+        # Method 4: dsregcmd UserEmail (work/school account registered on device)
+        if (-not $userSlug -and $deviceState.UserEmail) {
+            $userSlug = $deviceState.UserEmail -replace '@', '_' -replace '\.', '_'
+            Write-Log -Text "OneDrive user derived from dsregcmd UserEmail ($($deviceState.UserEmail)): $userSlug"
+        }
+
+        # Method 5: whoami /upn (last resort - may return local AD UPN on non-Entra devices)
         if (-not $userSlug) {
             try {
                 $upn = (whoami /upn 2>$null)
                 if ($upn) {
                     $upn = $upn.Trim()
+                    if (-not $deviceState.AadJoined) {
+                        Write-Log -Text "WARNING: Device is not Entra ID joined - whoami /upn may return a local AD identity ($upn) instead of your O365 account. Set `$o365UserLogin in the script config to fix this." -IsWarning
+                    }
                     $userSlug = $upn -replace '@', '_' -replace '\.', '_'
                     Write-Log -Text "OneDrive user derived from UPN ($upn): $userSlug"
                 }
@@ -1548,7 +1632,7 @@ while ($true) {
             }
         }
         else {
-            Write-Log -Text "Could not determine OneDrive user slug" -IsError
+            Write-Log -Text "Could not determine OneDrive user slug - set `$o365UserLogin in the script configuration" -IsError
             $script:errorsForUser += "Could not detect your OneDrive username`n"
         }
     }
