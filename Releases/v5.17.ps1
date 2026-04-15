@@ -1383,7 +1383,7 @@ while($true){
                     log -text "Your Edge version and Edge Driver version match"
                 }else{
                     log -text "Your Edge version ($edgeVersion) and Edge Driver version ($curEdgeDriverVersion) do not match, attempting to auto update"
-                    $edgeDriverDownloadUrl = "https://msedgedriver.microsoft.com/$version/edgedriver_win64.zip"
+                    $edgeDriverDownloadUrl = "https://msedgedriver.microsoft.com/$edgeVersion/edgedriver_win64.zip"
                     log -text "Downloading latest version from $edgeDriverDownloadUrl to $driversLocation"
                     $tempZipPath = Join-Path $ENV:TEMP -ChildPath "edgedriver_win64.zip"
                     Invoke-WebRequest -uri $edgeDriverDownloadUrl -OutFile $tempZipPath -Method Get -UseBasicParsing -ErrorAction Stop
