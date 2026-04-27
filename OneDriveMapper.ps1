@@ -611,7 +611,8 @@ function Get-SharePointCookiesViaCDP {
             while ($waited -lt $ManualLoginTimeout) {
                 try {
                     $pages = $wc.DownloadString("http://localhost:$debugPort/json") | ConvertFrom-Json
-                    $spPage = $pages | Where-Object { $_.url -like "*$spHost*" -and $_.webSocketDebuggerUrl } | Select-Object -First 1
+                    start-sleep -seconds 1
+                    $spPage = $pages | Where-Object { ($_.url -like "*$spHost*" -and $_.url -notlike "*login.microsoftonline.com*") -and $_.webSocketDebuggerUrl } | Select-Object -First 1
                     if ($spPage) {
                         Write-Log -Text 'User completed authentication'
                         Start-Sleep -Seconds 2  # Let cookies settle
