@@ -189,9 +189,10 @@ Set `$restartExplorer = $true` when using folder redirection to ensure Explorer 
 
 | Variable | Default | Description |
 |---|---|---|
-| `$edgeWaitSeconds` | `10` | Seconds to wait for headless Edge to complete silent SSO via PRT. Increase on slow networks. |
+| `$edgeWaitSeconds` | `10` | Maximum seconds to wait for headless Edge to complete silent SSO via PRT. The script polls and finishes as soon as authentication cookies appear, so this is a ceiling, not a fixed delay. Increase on slow networks. |
 | `$fallbackToVisibleAuth` | `$true` | When silent SSO fails, open a visible Edge window for the user to sign in manually. |
 | `$visibleAuthTimeout` | `300` | Maximum seconds to wait for manual sign-in before giving up (5 minutes). |
+| `$reauthIntervalHours` | `12` | Proactively re-authenticate every N hours so SharePoint cookies are refreshed before they expire (prevents stale drives after sleep/resume or overnight). Set `0` to disable. Requires `$autoRemapMethod` to be enabled. |
 
 ### Behavior Options
 
@@ -217,14 +218,31 @@ Set `$restartExplorer = $true` when using folder redirection to ensure Explorer 
 |---|---|---|
 | `$showProgressBar` | `$true` | Show a visual progress bar during mapping. |
 | `$progressBarColor` | `'#CC99FF'` | Progress bar accent color (HTML hex). |
-| `$progressBarText` | `'OneDriveMapper v6.00 is connecting your drives...'` | Text displayed in the progress bar window. |
+| `$progressBarText` | `'OneDriveMapper v<version> is connecting your drives...'` | Text displayed in the progress bar window. |
 
 ### Logging
 
 | Variable | Default | Description |
 |---|---|---|
-| `$logfile` | `%APPDATA%\OneDriveMapper_6.00.log` | Log file path. |
+| `$logfile` | `%APPDATA%\OneDriveMapper.log` | Log file path. |
 | `$maxLocalLogSizeMB` | `2` | Maximum log file size in MB before rotation. |
+
+### Central Configuration (Intune / GPO)
+
+All scalar settings above (and the mapping tables as JSON) can be overridden without editing the script by deploying registry values:
+
+| Registry key | Scope |
+|---|---|
+| `HKCU\Software\Policies\Lieben\OneDriveMapper` | User policy |
+| `HKLM\Software\Policies\Lieben\OneDriveMapper` | Machine policy (takes precedence) |
+
+Value name = variable name (e.g. `O365CustomerName`). Booleans as DWORD `0`/`1`, numbers as DWORD, text as REG_SZ. `desiredMappings` and `listOfFoldersToRedirect` can be provided as a REG_SZ containing a JSON array, e.g.:
+
+```json
+[{"displayName":"Onedrive for Business","targetLocationType":"driveletter","targetLocationPath":"X:","sourceLocationPath":"autodetect","mapOnlyForSpecificGroup":""}]
+```
+
+Applied overrides are written to the log at startup, so you can always see which settings came from policy. This lets you deploy one unmodified script to your entire estate and manage tenant name, mappings, and behavior centrally.
 
 ---
 
@@ -243,6 +261,9 @@ Set `$restartExplorer = $true` when using folder redirection to ensure Explorer 
 - **Elevation bypass** - If accidentally run as Administrator, re-launches as the standard user via scheduled task.
 - **Progress bar** - Visual progress indicator for end users.
 - **Per-user folders** - Optionally create individual user folders on shared drives.
+- **Central configuration** - Override any setting via registry policies (Intune/GPO) without editing the script.
+- **Proactive cookie refresh** - Re-authenticates silently before cookies expire so drives never go stale.
+- **Diagnostics mode** - `-Diagnose` produces a full environment health report without making changes.
 
 ---
 
@@ -280,6 +301,7 @@ Register-ScheduledTask -TaskName 'OneDriveMapper' -Action $action -Trigger $trig
 |---|---|
 | `-HideConsole` | Hides the PowerShell console window. Use in production deployments. |
 | `-AsTask` | Internal flag indicating the script was launched from the elevation bypass scheduled task. |
+| `-Diagnose` | Reports environment health (Edge, PRT, WebClient service, tenant connectivity, existing mappings, effective configuration) and exits without making any changes. Ideal for helpdesk triage: `powershell -ExecutionPolicy Bypass -File OneDriveMapper.ps1 -Diagnose` |
 
 ---
 
@@ -302,19 +324,16 @@ The current version. Uses headless Microsoft Edge and Chrome DevTools Protocol (
 - ~1,580 lines, cleanly structured with regions and proper function documentation
 - PowerShell 5.1+ required, Strict Mode enabled
 
-**Removed from v5:**
-- Selenium WebDriver dependency (`WebDriver.dll`, `msedgedriver.exe`)
-- Automatic Edge driver download/update logic
-- Internet Explorer cookie clearing
-- `$useAzAdConnectSSO`, `$autoUpdateEdgeDriver`, `$driversLocation`, `$forceHideEdge`, `$autoClearAllCookies` settings
-
-**Added in v6:**
-- `$edgeWaitSeconds` - configurable silent SSO wait time
-- `$fallbackToVisibleAuth` - toggle for visible Edge fallback
-- `$visibleAuthTimeout` - configurable manual login timeout
-- UPN-based OneDrive slug detection (reliable fallback when URL redirect doesn't reveal the slug)
-- Device state verification (`dsregcmd /status`) with PRT check
-- Proper function-based architecture with `[CmdletBinding()]` and comment-based help
+**Added in v6.10:**
+- **Central configuration via registry** - manage all settings (including mappings as JSON) through Intune/GPO under `Software\Policies\Lieben\OneDriveMapper`, no script editing needed
+- **`-Diagnose` parameter** - one-shot environment health report (Edge, PRT, WebClient, tenant connectivity, existing mappings) for helpdesk triage, makes no changes
+- **Faster sign-in** - authentication now polls for cookies and completes as soon as SSO finishes (typically 3-6s) instead of always waiting the full `$edgeWaitSeconds`; also eliminates the race where cookies were read before they were set
+- **Proactive cookie refresh** (`$reauthIntervalHours`) - silently re-authenticates before SharePoint cookies expire, so drives no longer go stale overnight or after sleep/resume
+- **Tenant-based connectivity checks** - drive monitoring now tests TCP 443 to your own SharePoint host instead of pinging 8.8.8.8 (which many corporate firewalls block)
+- **Converged drive fix** - converged mappings now correctly create their shortcuts inside the converged drive and are health-checked correctly (previously they could trigger an endless remap loop)
+- **Elevation bypass fix** - the scheduled-task fallback now survives script paths containing spaces
+- Cookies are injected with the `secure` attribute (https-only), auth cookie values never touch the log file
+- Stable log file name (`OneDriveMapper.log`) across versions, version still logged in the banner
 
 ---
 
@@ -361,11 +380,11 @@ Used Internet Explorer's COM automation (`InternetExplorer.Application`) for aut
 
 ---
 
-### v3 - Internet Explorer + Native Authentication
+### v3 - Native Authentication
 
 **Download:** [`Releases/v3.30.ps1`](Releases/v3.30.ps1)
 
-The original architecture. Used Internet Explorer COM automation with extensive support for different user identity lookup methods (AD UPN, AD email, Azure AD join, interactive prompt, registry key, full login form, `whoami /upn`) and ADFS authentication modes including certificate-based auth.
+The original architecture. Uses direct http calls with extensive support for different user identity lookup methods (AD UPN, AD email, Azure AD join, interactive prompt, registry key, full login form, `whoami /upn`) and ADFS authentication modes including certificate-based auth.
 
 **Key characteristics:**
 - Seven different `$userLookupMode` options for determining user identity
@@ -373,13 +392,11 @@ The original architecture. Used Internet Explorer COM automation with extensive 
 - Cached credentials (encrypted password stored in AppData)
 - Cookie caching for silent re-authentication
 - Supported auto-mapping of favorited sites
-- IE-based with manual login form fallback
 - ~3,150 lines (largest version due to all the authentication permutations)
 
 **Why it was replaced:**
 - Extremely complex credential management logic
-- Many authentication modes made troubleshooting difficult
-- IE dependency became a liability
+- Many authentication modes made troubleshooting difficult and lack native MFA support
 - Password caching raised security concerns
 
 ---
@@ -388,8 +405,8 @@ The original architecture. Used Internet Explorer COM automation with extensive 
 
 | Feature | v3 | v4 | v5 | v6 |
 |---|:---:|:---:|:---:|:---:|
-| **Authentication** | IE + credentials/ADFS | IE COM | Selenium + Edge | Headless Edge + CDP |
-| **Browser dependency** | Internet Explorer | Internet Explorer | Edge + WebDriver | Edge (built-in) |
+| **Authentication** | credentials/ADFS | IE COM | Selenium + Edge | Headless Edge + CDP |
+| **Browser dependency** | None | Internet Explorer | Edge + WebDriver | Edge (built-in) |
 | **External files needed** | None | None | WebDriver.dll + msedgedriver.exe | None |
 | **Silent SSO** | Cookie cache | KMSI + IE | Selenium auto-login | PRT via BrowserCore |
 | **Manual login fallback** | Built-in form / IE | IE prompt | Edge window | Edge window |
@@ -442,7 +459,7 @@ The WebDAV URL is not trusted. Ensure the SharePoint URLs are added to the Trust
 
 ### Log File
 
-Check the log file at `%APPDATA%\OneDriveMapper_6.00.log` for detailed diagnostic information. Each line is timestamped and categorized as INFO, WARNING, or ERROR.
+Check the log file at `%APPDATA%\OneDriveMapper.log` for detailed diagnostic information. For a quick environment health check, run the script with `-Diagnose`. Each line is timestamped and categorized as INFO, WARNING, or ERROR.
 
 ---
 
