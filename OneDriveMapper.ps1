@@ -704,6 +704,11 @@ function Get-SharePointCookiesViaCDP {
     $wc        = $null
 
     try {
+        # Create the profile folder up front so Edge's redirected output files can be written into it
+        $null = New-Item -Path $tempDir -ItemType Directory -Force -ErrorAction Stop
+        $edgeOutFile = Join-Path $tempDir 'edge_stdout.log'
+        $edgeErrFile = Join-Path $tempDir 'edge_stderr.log'
+
         # Build launch arguments ($args is a PowerShell automatic variable - do not use it here)
         $edgeArgs = @(
             "--remote-debugging-port=$debugPort"
@@ -711,6 +716,8 @@ function Get-SharePointCookiesViaCDP {
             "--no-first-run"
             "--no-default-browser-check"
             "--disable-features=msEdgeInterstitialRedirectToNTP"
+            "--disable-logging"
+            "--log-level=3"
         )
         if ($Headless) {
             $edgeArgs += '--headless'
@@ -718,8 +725,13 @@ function Get-SharePointCookiesViaCDP {
         }
         $edgeArgs += "`"$Url`""
 
+        # Edge writes CDP/GPU/crashpad noise ('DevTools listening on ws://...', [ERROR:...] lines) to
+        # its stdout/stderr, which it inherits from our console. Redirect both to throwaway files in
+        # the profile folder so users never see it; they are removed with the folder in finally.
         $windowStyle = if ($Headless) { 'Hidden' } else { 'Normal' }
-        $edgeProc = Start-Process -FilePath $EdgePath -ArgumentList ($edgeArgs -join ' ') -PassThru -WindowStyle $windowStyle
+        $edgeProc = Start-Process -FilePath $EdgePath -ArgumentList ($edgeArgs -join ' ') -PassThru `
+                                  -WindowStyle $windowStyle `
+                                  -RedirectStandardOutput $edgeOutFile -RedirectStandardError $edgeErrFile
         Write-Log -Text "Edge launched (PID $($edgeProc.Id), port $debugPort, headless=$Headless)"
 
         # Wait for CDP to become available
@@ -737,6 +749,14 @@ function Get-SharePointCookiesViaCDP {
 
         if (-not $cdpReady) {
             Write-Log -Text 'CDP not available after 17 seconds' -IsError
+            # Edge failed to come up at all - its captured output is the only clue we have
+            try {
+                $edgeErr = Get-Content -Path $edgeErrFile -Tail 3 -ErrorAction Stop
+                foreach ($line in $edgeErr) {
+                    if ("$line".Trim()) { Write-Log -Text "  Edge: $line" -IsError }
+                }
+            }
+            catch { }
             return $null
         }
 
