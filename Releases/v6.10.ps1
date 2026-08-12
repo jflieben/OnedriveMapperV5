@@ -46,7 +46,7 @@
     existing mappings) and exits without making any changes. Ideal for helpdesk triage.
 
 .NOTES
-    Copyright/License: https://www.lieben.nu/liebensraum/commercial-use/
+    Copyright/License: https://jsolve.nl/commercial-use.html
     Author:            Jos Lieben (Lieben Consultancy)
     Script help:       https://www.lieben.nu/liebensraum/onedrivemapper/
     Enterprise users:  https://www.lieben.nu/liebensraum/onedrivemapper/onedrivemapper-cloud/

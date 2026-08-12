@@ -4,8 +4,8 @@
 
 OneDriveMapper uses WebDAV (NET USE) to present SharePoint Online and OneDrive for Business document libraries as regular Windows network drives. Users get a familiar drive letter in Explorer (e.g. `X:`) that points directly to their cloud storage, with no sync engine, no OneDrive client installation, and no local disk space consumed.
 
-- **Author:** Jos Lieben ([Lieben Consultancy](https://www.lieben.nu))
-- **License:** [Commercial use policy](https://www.lieben.nu/liebensraum/commercial-use/)
+- **Author:** Jos Lieben ([JSolve B.V.](https://www.jsolve.nl))
+- **License:** [Commercial use policy](https://jsolve.nl/commercial-use.html)
 - **Documentation & FAQ:** [lieben.nu/liebensraum/onedrivemapper](https://www.lieben.nu/liebensraum/onedrivemapper/)
 - **Enterprise alternative:** [OneDriveMapper Cloud](https://www.lieben.nu/liebensraum/onedrivemapper/onedrivemapper-cloud/)
 
@@ -467,5 +467,5 @@ Check the log file at `%APPDATA%\OneDriveMapper.log` for detailed diagnostic inf
 
 - **Documentation & FAQ:** https://www.lieben.nu/liebensraum/onedrivemapper/
 - **Enterprise version:** https://www.lieben.nu/liebensraum/onedrivemapper/onedrivemapper-cloud/
-- **License:** https://www.lieben.nu/liebensraum/commercial-use/
-- **Author:** Jos Lieben - [Lieben Consultancy](https://www.lieben.nu)
+- **License:** https://jsolve.nl/commercial-use.html
+- **Author:** Jos Lieben - [JSolve B.V.](https://www.jsolve.nl)

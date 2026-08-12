@@ -2,9 +2,9 @@
 #OneDriveMapper
 #Copyright:          Free to use, please leave this header intact 
 #Author:             Jos Lieben
-#Company:            Lieben Consultancy (http://www.lieben.nu) 
+#Company:            JSolve B.V. (http://www.jsolve.nl) 
 #Script help:        http://www.lieben.nu, please provide a decrypted Fiddler Trace Log if you're using Native auth and having issues
-#Copyright/License:  https://www.lieben.nu/liebensraum/commercial-use/ (Commercial (re)use not allowed without prior written consent by the author, otherwise free to use/modify as long as header are kept intact)
+#Copyright/License:  https://jsolve.nl/commercial-use.html (Commercial (re)use not allowed without prior written consent by the author, otherwise free to use/modify as long as header are kept intact)
 #Purpose:            This script maps Onedrive for Business and/or maps a configurable number of Sharepoint Libraries
 #Enterprise users:   This script is not recommended for Enterprise use as no dedicated support is available. Check www.lieben.nu for enterprise options.
 

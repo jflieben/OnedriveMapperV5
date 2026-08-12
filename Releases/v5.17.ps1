@@ -1,6 +1,6 @@
 ######## 
 #OneDriveMapper
-#Copyright/License: https://www.lieben.nu/liebensraum/commercial-use/ (Commercial (re)use not allowed without prior written consent by the author, otherwise free to use/modify as long as header are kept intact)
+#Copyright/License: https://jsolve.nl/commercial-use.html (Commercial (re)use not allowed without prior written consent by the author, otherwise free to use/modify as long as header are kept intact)
 #Author:            Jos Lieben (Lieben Consultancy)
 #Script help:       https://www.lieben.nu/liebensraum/onedrivemapper/
 #Purpose:           This script maps Onedrive for Business and/or maps a configurable number of Sharepoint Libraries
